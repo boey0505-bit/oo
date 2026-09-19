@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>記承天寺夜遊 - 互動體驗</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@300;400;700&display=swap');
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #020617; /* Tailwind slate-950 */
+            font-family: 'Noto Serif TC', serif;
+            touch-action: none; /* Prevent scroll on touch devices */
+        }
+
+        #game-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* UI Overlay Layer */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none; /* Let clicks pass through to canvas */
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .text-fade {
+            transition: opacity 2s ease-in-out;
+            opacity: 0;
+        }
+
+        .text-visible {
+            opacity: 1;
+        }
+
+        .poem-text {
+            color: #f8fafc;
+            text-shadow: 0 0 15px rgba(255, 255, 255, 0.4);
+            font-size: 1.5rem;
+            letter-spacing: 0.2em;
+            line-height: 2;
+            text-align: center;
+            max-width: 80%;
+            margin-bottom: 2rem;
+            writing-mode: horizontal-tb;
+        }
+
+        @media (min-width: 768px) {
+            .poem-text {
+                font-size: 2rem;
+            }
+        }
+
+        #instruction {
+            position: absolute;
+            bottom: 2rem;
+            color: #94a3b8;
+            font-size: 0.9rem;
+            letter-spacing: 0.1em;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 1; }
+        }
+
+        /* Cover Screen */
+        #cover-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 100;
+            background: #020617;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: opacity 1.5s ease-in-out;
+        }
+
+        #cover-screen.fade-out {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        #cover-image {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: center;
+            display: block;
+        }
+
+        #cover-hint {
+            position: absolute;
+            bottom: 2.5rem;
+            color: rgba(255, 255, 255, 0.75);
+            font-family: 'Noto Serif TC', serif;
+            font-size: 1rem;
+            letter-spacing: 0.25em;
+            text-shadow: 0 0 12px rgba(0,0,0,0.9);
+            animation: pulse 2s infinite;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Cover Screen -->
+    <div id="cover-screen">
+        <img id="cover-image" src="封面檔.png" alt="記承天寺夜遊 封面">
+        <div id="cover-hint">▷ 點擊任意處開始</div>
+    </div>
+
+    <canvas id="game-canvas"></canvas>
+    
+    <div id="ui-layer">
+        <div id="poem-container" class="poem-text text-fade">
+            <!-- Text dynamically injected here -->
+        </div>
+        <div id="instruction" class="text-fade" style="opacity:0;">
+            [ 點擊畫面任意處移動 / 開始 ]
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+        const poemContainer = document.getElementById('poem-container');
+        const instructionBox = document.getElementById('instruction');
+
+        // Handles responsive canvas sizing
+        function resizeCanvas() {
+            canvas.width = window.innerWidth * window.devicePixelRatio;
+            canvas.height = window.innerHeight * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Game State Enum
+        const SCENES = {
+            START: 0,
+            BEDROOM: 1, // 解衣欲睡，月色入戶
+            PATH: 2,    // 至承天寺尋張懷民
+            COURTYARD: 3, // 庭下如積水空明 (Core gameplay)
+            END: 4      // 但少閑人如吾兩人者耳
+        };
+
+        let currentScene = SCENES.START;
+        let sceneTime = 0;
+
+        // Player Entity (Represents Su Shi / The Spirit)
+        const player = {
+            x: window.innerWidth / 2,
+            y: window.innerHeight * 0.8,
+            targetX: window.innerWidth / 2,
+            targetY: window.innerHeight * 0.8,
+            radius: 8,
+            speed: 0.03, // Lerp factor for smooth movement
+            isMoving: false
+        };
+
+        // Companion Entity (Zhang Huaimin)
+        const companion = {
+            x: window.innerWidth / 2,
+            y: window.innerHeight * 0.3,
+            radius: 8,
+            opacity: 0
+        };
+
+        // Ripple Effect System (For "積水空明")
+        const ripples = [];
+        function createRipple(x, y) {
+            ripples.push({
+                x: x,
+                y: y,
+                radius: 1,
+                maxRadius: Math.random() * 50 + 50,
+                alpha: 0.6,
+                growthRate: Math.random() * 0.5 + 0.5
+            });
+        }
+
+        function updateAndDrawRipples() {
+            for (let i = ripples.length - 1; i >= 0; i--) {
+                let r = ripples[i];
+                r.radius += r.growthRate;
+                r.alpha -= 0.005; // Fade out gradually
+
+                if (r.alpha <= 0) {
+                    ripples.splice(i, 1);
+                    continue;
+                }
+
+                ctx.beginPath();
+                ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+                ctx.strokeStyle = `rgba(255, 255, 255, ${r.alpha * 0.5})`;
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            }
+        }
+
+        // Ambient particles (dust/moonlight motes)
+        const particles = Array.from({length: 40}, () => ({
+            x: Math.random() * window.innerWidth,
+            y: Math.random() * window.innerHeight,
+            size: Math.random() * 1.5 + 0.5,
+            speedY: Math.random() * -0.5 - 0.1,
+            speedX: (Math.random() - 0.5) * 0.5,
+            alpha: Math.random() * 0.5 + 0.1
+        }));
+
+        function drawAmbientParticles() {
+            ctx.fillStyle = 'rgba(255, 250, 205, 0.4)'; // Lemon chiffon moonlight
+            particles.forEach(p => {
+                p.y += p.speedY;
+                p.x += p.speedX;
+                if (p.y < 0) p.y = window.innerHeight;
+                if (p.x < 0) p.x = window.innerWidth;
+                if (p.x > window.innerWidth) p.x = 0;
+
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        }
+
+        const storyTexts = [
+            "元豐六年十月十二日夜，",
+            "解衣欲睡，月色入戶，欣然起行。",
+            "念無與為樂者，遂至承天寺尋張懷民。",
+            "懷民亦未寢，相與步於中庭。",
+            "庭下如積水空明，水中藻、荇交橫，\n蓋竹柏影也。",
+            "何夜無月？何處無竹柏？\n但少閑人如吾兩人者耳。"
+        ];
+
+        let currentTextIndex = -1;
+
+        function showText(index) {
+            if (index >= storyTexts.length) return;
+            poemContainer.classList.remove('text-visible');
+            
+            setTimeout(() => {
+                poemContainer.innerText = storyTexts[index];
+                poemContainer.classList.add('text-visible');
+            }, 1000); // Wait for fade out
+        }
+
+        function advanceScene() {
+            currentScene++;
+            sceneTime = 0;
+            currentTextIndex++;
+            showText(currentTextIndex);
+
+            if (currentScene === SCENES.BEDROOM) {
+                instructionBox.innerText = "[ 點擊月光處，起行 ]";
+            } else if (currentScene === SCENES.PATH) {
+                instructionBox.innerText = "[ 尋找張懷民 ]";
+                player.targetY = window.innerHeight * 0.8; // Reset player pos
+                player.y = window.innerHeight * 0.8;
+            } else if (currentScene === SCENES.COURTYARD) {
+                instructionBox.innerText = "[ 在中庭漫步，感受積水空明 ]";
+                currentTextIndex++; // Show next line immediately for courtyard
+                showText(currentTextIndex);
+            } else if (currentScene === SCENES.END) {
+                instructionBox.classList.remove('text-visible');
+                currentTextIndex++;
+                setTimeout(() => showText(currentTextIndex), 3000);
+            }
+        }
+
+        function handleInput(e) {
+            e.preventDefault();
+            let clientX = e.clientX;
+            let clientY = e.clientY;
+
+            // Handle Touch
+            if (e.touches && e.touches.length > 0) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            }
+
+            if (currentScene === SCENES.START) {
+                // Dismiss cover screen first
+                const cover = document.getElementById('cover-screen');
+                if (cover && !cover.classList.contains('fade-out')) {
+                    cover.classList.add('fade-out');
+                    setTimeout(() => {
+                        cover.style.display = 'none';
+                        advanceScene();
+                    }, 1500);
+                    return;
+                }
+                advanceScene();
+                return;
+            }
+
+            // Update player target
+            player.targetX = clientX;
+            player.targetY = clientY;
+            player.isMoving = true;
+        }
+
+        window.addEventListener('click', handleInput);
+        window.addEventListener('touchstart', handleInput, {passive: false});
+
+        // Generate abstract bamboo shadows
+        const shadows = Array.from({length: 15}, () => ({
+            x: Math.random() * window.innerWidth,
+            y: Math.random() * window.innerHeight,
+            width: Math.random() * 10 + 2,
+            height: Math.random() * 200 + 100,
+            angle: (Math.random() - 0.5) * 0.4
+        }));
+
+        function drawCourtyardShadows() {
+            ctx.save();
+            ctx.fillStyle = 'rgba(10, 15, 30, 0.7)'; // Dark shadow color matching algae
+            
+            // Draw gentle, swaying shadows
+            const sway = Math.sin(Date.now() / 2000) * 0.05;
+
+            shadows.forEach(s => {
+                ctx.save();
+                ctx.translate(s.x, s.y);
+                ctx.rotate(s.angle + sway);
+                
+                // Draw leaf/bamboo shapes
+                ctx.beginPath();
+                ctx.ellipse(0, 0, s.width, s.height, 0, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Add some crossing branches (藻荇交橫)
+                ctx.beginPath();
+                ctx.ellipse(20, 50, s.width * 0.5, s.height * 0.6, Math.PI / 4, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.restore();
+            });
+            ctx.restore();
+        }
+
+        function gameLoop() {
+            // Clear canvas with dark slate background
+            ctx.fillStyle = '#020617';
+            ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+            sceneTime++;
+
+            // Update Player Position (Lerp)
+            const dx = player.targetX - player.x;
+            const dy = player.targetY - player.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            
+            if (dist > 1) {
+                player.x += dx * player.speed;
+                player.y += dy * player.speed;
+                
+                // Generate ripples only in Courtyard scene when moving
+                if (currentScene === SCENES.COURTYARD && sceneTime % 10 === 0) {
+                    createRipple(player.x, player.y);
+                }
+            } else {
+                player.isMoving = false;
+            }
+
+            // Draw Background elements based on scene
+            if (currentScene >= SCENES.BEDROOM && currentScene < SCENES.COURTYARD) {
+                // Draw a simple moonlight beam
+                const grad = ctx.createLinearGradient(window.innerWidth/2, 0, window.innerWidth/2, window.innerHeight);
+                grad.addColorStop(0, 'rgba(254, 240, 138, 0.15)'); // Moonlight yellow
+                grad.addColorStop(1, 'rgba(2, 6, 23, 0)');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.moveTo(window.innerWidth * 0.3, 0);
+                ctx.lineTo(window.innerWidth * 0.7, 0);
+                ctx.lineTo(window.innerWidth * 0.6, window.innerHeight);
+                ctx.lineTo(window.innerWidth * 0.4, window.innerHeight);
+                ctx.fill();
+            }
+
+            if (currentScene === SCENES.COURTYARD || currentScene === SCENES.END) {
+                drawCourtyardShadows();
+                updateAndDrawRipples();
+            }
+
+            drawAmbientParticles();
+
+            // Draw Companion (Zhang Huaimin) in Path scene
+            if (currentScene === SCENES.PATH) {
+                ctx.beginPath();
+                ctx.arc(companion.x, companion.y, companion.radius, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(200, 220, 255, ${companion.opacity})`;
+                ctx.shadowBlur = 20;
+                ctx.shadowColor = 'rgba(200, 220, 255, 1)';
+                ctx.fill();
+                ctx.shadowBlur = 0; // reset
+
+                // Companion appears as player gets closer
+                const d = Math.sqrt(Math.pow(player.x - companion.x, 2) + Math.pow(player.y - companion.y, 2));
+                companion.opacity = Math.max(0, 1 - (d / (window.innerHeight * 0.5)));
+
+                if (d < 50 && sceneTime > 100) {
+                    advanceScene(); // Met companion, go to courtyard
+                }
+            }
+
+            if (currentScene === SCENES.BEDROOM) {
+                // Target to click/move to proceed
+                if (player.y < window.innerHeight * 0.4 && sceneTime > 100) {
+                    advanceScene();
+                }
+            }
+
+            if (currentScene === SCENES.COURTYARD) {
+                // Wander for a bit, then advance to END
+                if (sceneTime > 800) { 
+                    advanceScene();
+                }
+                
+                // Draw Companion beside player
+                ctx.beginPath();
+                ctx.arc(player.x + 30, player.y + 10, companion.radius, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(200, 220, 255, 0.8)';
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = 'rgba(200, 220, 255, 0.8)';
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+
+            // Draw Player (Su Shi)
+            if (currentScene !== SCENES.START) {
+                ctx.beginPath();
+                ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(254, 240, 138, 0.9)'; // Brighter moon glow
+                ctx.shadowBlur = 25;
+                ctx.shadowColor = 'rgba(254, 240, 138, 1)';
+                ctx.fill();
+                
+                // Reset shadow for other objects
+                ctx.shadowBlur = 0;
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Start the engine (don't show text until cover dismissed)
+        requestAnimationFrame(gameLoop);
+
+    </script>
+</body>
+</html>
